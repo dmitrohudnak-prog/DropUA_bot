@@ -13,14 +13,10 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
 )
-from pyngrok import ngrok
-
 
 # Налаштування
-PORT = 5000
-# Прямо вставляємо твої ключі у вигляді рядків
+PORT = int(os.environ.get("PORT", 5000))
 TOKEN = "8220398599:AAH9PJwgnpRf_q-xY-Vq7puHgTwQYB0YG-c"
-NGROK_AUTH_TOKEN = "3KhCrjEUPS9RuaJF5ogq1RHKwrt_7CKvuTYViDCfwuE6AmEje"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,8 +39,9 @@ def serve_static(path):
 
 
 def run_flask():
+    # На хостингу потрібно слухати 0.0.0.0 і порт від Render
     app.run(
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=PORT,
         debug=False,
         use_reloader=False,
@@ -97,50 +94,37 @@ async def main():
             f"Не знайдено файл {STATIC_DIR}/index.html"
         )
 
-    if NGROK_AUTH_TOKEN:
-        ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
 
-    # Запуск сайту
+    # Запуск сайту у фоновому потоці
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    tunnel = None
+    # Отримуємо посилання на сайт: на Render воно прийде автоматично, 
+    # а для локального запуск ставимо запасний варіант
+    web_app_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not web_app_url:
+        web_app_url = f"http://127.0.0.1:{PORT}"
+
+    print(f"Сайт працює на порту: {PORT}")
+    print(f"Telegram Mini App URL: {web_app_url}")
+
+    # Реєстрація обробників
+    async def start(message: Message):
+        await start_handler(message, web_app_url)
+
+    dp.message.register(start, Command("start"))
+    dp.callback_query.register(
+        orders_handler,
+        lambda callback: callback.data == "my_orders",
+    )
+
+    print("Бот запущено!")
 
     try:
-        # Створення HTTPS-посилання через ngrok
-        tunnel = ngrok.connect(PORT, "http")
-        web_app_url = tunnel.public_url.rstrip("/")
-
-        if not web_app_url.startswith("https://"):
-            raise RuntimeError(
-                f"Потрібне HTTPS-посилання, отримано: {web_app_url}"
-            )
-
-        print(f"Сайт: http://127.0.0.1:{PORT}")
-        print(f"Telegram Mini App: {web_app_url}")
-
-        # Реєстрація обробників
-        async def start(message: Message):
-            await start_handler(message, web_app_url)
-
-        dp.message.register(start, Command("start"))
-        dp.callback_query.register(
-            orders_handler,
-            lambda callback: callback.data == "my_orders",
-        )
-
-        print("Бот запущено! Напиши йому /start у Telegram.")
-
         await dp.start_polling(bot)
-
     finally:
-        if tunnel is not None:
-            ngrok.disconnect(tunnel.public_url)
-
-        ngrok.kill()
         await bot.session.close()
 
 
